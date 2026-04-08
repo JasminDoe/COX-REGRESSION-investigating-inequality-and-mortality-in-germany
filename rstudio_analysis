@@ -1,0 +1,353 @@
+---
+title: >
+  Cemetery Socioeconomic Project
+subtitle: >
+  The Cemetery Socioeconomic Project examines whether differences in burial type reflect inequalities in longevity. Specifically, it compares individuals interred in traditional graves, often associated with higher costs, to those in urn burials, which are typically less expensive. 
+  
+  Using cemetery records, the project extracts information on age at death, burial type, and temporal trends. Burial form is used as a proxy for socioeconomic status, allowing the analysis of whether individuals with more costly burial arrangements tend to live longer.
+  
+  By linking these patterns to broader social and demographic contexts, the project aims to provide insight into how socioeconomic inequality is associated with lifespan, even when measured through unconventional data sources such as cemeteries.
+author:
+  
+- name: Jasmin Dönicke
+  affiliation: 
+  - University Medical Center Mainz
+  email: jasminabuaishah@gmail.com
+  orcid: 0009-0006-0721-0790
+      
+date: 2026-03-31
+format:
+  html:
+    toc: true
+    number-sections: true
+    embed-resources: true
+    mainfont: "Atkinson Hyperlegible"
+    # mainfont: "IBM Plex Sans"
+    link-external-newwindow: true
+    # code-link: true ## does seem to interfere with the title... pity.
+    # code-tools: true
+    theme: 
+    - cosmo
+    - ummz_theme.scss
+execute: 
+  cache: false
+  echo: true
+  eval: true
+  output: true
+  message: false
+  warning: false
+editor_options: 
+  chunk_output_type: console
+  execute:
+  error: true
+---
+
+
+# Prepare Dataset
+```{r}
+# load data
+dat <- read.csv("cemetery_clean.csv")
+
+# load libraries 
+library(gtsummary)
+library(dplyr)
+library(survival)
+library(survminer)
+library(tidyverse)
+
+# Ensure grave_type is a factor with labels
+dat <- dat %>%
+  mutate(
+    grave_type = factor(grave_type, levels = c(0, 1),
+                        labels = c("Urn", "Grave")),
+    sex = factor(sex, levels = c(0, 1),
+                 labels = c("Male", "Female"))
+  )
+```
+
+
+# Descriptive Statistics
+```{r}
+# Create Table 1 - with Mean and SD
+table1 <- dat %>%
+  select(grave_type, sex, Birth_year, Death_year, survival_time) %>%
+  tbl_summary(
+    by = grave_type,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    missing = "no",
+    label = list(
+      sex ~ "Sex",
+      Birth_year ~ "Birth Year",
+      Death_year ~ "Death Year",
+      survival_time ~ "Survival Time"
+    )
+  ) %>%
+  add_n()  # adds total N per group
+
+table1$table_body <- table1$table_body %>%
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::starts_with("stat_"),
+      ~ gsub(",", "", .x)
+    )
+  )
+
+
+table1
+```
+
+```{r}
+# Create Table 2 - with Median and IQR
+table2 <- dat %>%
+  select(grave_type, sex, Birth_year, Death_year, survival_time) %>%
+  tbl_summary(
+    by = grave_type,
+    statistic = list(
+      all_continuous() ~ "{median} ({p25}, {p75})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    missing = "no",
+    label = list(
+      sex ~ "Sex",
+      Birth_year ~ "Birth Year",
+      Death_year ~ "Death Year",
+      survival_time ~ "Survival Time"
+    )
+  ) %>%
+  add_n()  # adds total N per group
+
+table2$table_body <- table2$table_body %>%
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::starts_with("stat_"),
+      ~ gsub(",", "", .x)
+    )
+  )
+
+
+table2
+```
+
+
+# Create a Cox Regression
+```{r}
+df_cox <- dat %>%
+  mutate(
+    event = 1L
+  ) %>%
+  filter(
+    !is.na(survival_time),
+    !is.na(grave_type),
+    !is.na(sex)
+  )
+
+
+df_cox <- df_cox %>%
+  mutate(
+    grave_type = factor(grave_type, levels = c("Urn", "Grave")),
+    sex = factor(sex, levels = c("Male", "Female"))
+  )
+
+# Survival object
+surv_obj <- Surv(time = df_cox$survival_time, event = df_cox$event)
+
+# Cox model
+cox_model <- coxph(surv_obj ~ grave_type + sex, data = df_cox)
+
+summary(cox_model)
+```
+
+-----------------
+
+# Plot Birth Year
+```{r}
+library(ggplot2)
+
+ggplot(df_cox, aes(x = Birth_year)) +
+  geom_histogram(binwidth = 5) +
+  labs(
+    title = "Distribution of Birth Year",
+    x = "Birth Year",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+# Create Birth Cohorts
+```{r}
+df_cox <- df_cox %>%
+  mutate(
+    cohort = cut(
+      Birth_year,
+      breaks = c(1800, 1914, 1939, 2000),
+      labels = c("before WWI", "between WWI and WWII", "after WWII"),
+      right = FALSE
+    ),
+     cohort = relevel(cohort, ref = "after WWII"), 
+    event = 1L
+  ) %>%
+  filter(
+    !is.na(survival_time),
+    !is.na(grave_type),
+    !is.na(sex),
+    !is.na(cohort)
+  )
+```
+
+# Create Different Analyses for each Birth Cohort
+```{r}
+library(tidyverse)
+library(survival)
+library(broom)
+
+df_cox2 <- df_cox %>%
+  mutate(
+    cohort = cut(
+      Birth_year,
+      breaks = c(1800, 1914, 1939, 2000),
+      labels = c("before WWI", "between WWI and WWII", "after WWII"),
+      right = FALSE
+    ),
+    event = 1L,
+    grave_type = factor(grave_type, levels = c("Urn", "Grave")),
+    sex = factor(sex, levels = c("Male", "Female"))
+  ) %>%
+  filter(
+    !is.na(survival_time),
+    !is.na(grave_type),
+    !is.na(sex),
+    !is.na(cohort)
+  )
+
+cox_by_cohort <- df_cox2 %>%
+  group_by(cohort) %>%
+  group_modify(~ {
+    model <- coxph(
+      Surv(survival_time, event) ~ grave_type + sex,
+      data = .x
+    )
+    
+    broom::tidy(model, exponentiate = TRUE, conf.int = TRUE)
+  }) %>%
+  ungroup()
+
+cox_by_cohort
+
+#### make it cleaner
+
+grave_vs_urn_by_cohort <- cox_by_cohort %>%
+  filter(term == "grave_typeGrave") %>%
+  select(
+    cohort,
+    term,
+    estimate,
+    conf.low,
+    conf.high,
+    p.value
+  ) %>%
+  mutate(
+    result = paste0(
+      round(estimate, 2), " (",
+      round(conf.low, 2), ", ",
+      round(conf.high, 2), ")"
+    )
+  )
+
+grave_vs_urn_by_cohort
+grave_vs_urn_by_cohort %>%
+  select(
+    cohort,
+    `HR (95% CI)` = result,
+    `p-value` = p.value
+  )
+```
+
+
+
+# Create a Kaplan-Meier Plot
+```{r}
+# plot unadjusted model
+km_fit <- survfit(Surv(survival_time, event) ~ grave_type, data = df_cox)
+ggsurvplot(
+  km_fit,
+  data = df_cox,
+  conf.int = TRUE,
+  pval = TRUE,
+  risk.table = TRUE,
+  legend.title = "Burial Type",
+  legend.labs = c("Urn", "Grave"),
+  xlab = "Age (years)",
+  ylab = "Survival Probability",
+  ggtheme = theme_minimal()
+)
+```
+
+
+```{r}
+# Kaplan–Meier fit with Sex
+km_fit <- survfit(Surv(survival_time, event) ~ grave_type + sex, data = df_cox)
+
+ggsurvplot(
+  km_fit,
+  data = df_cox,
+  facet.by = "sex",            # separate panels for Male / Female
+  conf.int = TRUE,
+  pval = TRUE,
+  risk.table = TRUE,
+  legend.title = "Burial Type",
+  legend.labs = c("Urn", "Grave"),
+  xlab = "Age (years)",
+  ylab = "Survival Probability",
+  ggtheme = theme_minimal()
+)
+```
+
+
+# Population Death Pyramid
+```{r}
+library(dplyr)
+library(ggplot2)
+
+df_plot <- df_cox %>%
+  mutate(
+    age_group = cut(
+      survival_time,
+      breaks = seq(0, 105, by = 5),
+      right = FALSE,
+      include.lowest = TRUE
+    ),
+    sex = recode(as.character(sex),
+                 "0" = "Male",
+                 "1" = "Female"),
+    grave_type = recode(as.character(grave_type),
+                        "0" = "Urne grave",
+                        "1" = "Coffin grave")
+  ) %>%
+  count(grave_type, age_group, sex) %>%
+  mutate(
+    n = ifelse(sex == "Male", -n, n)
+  )
+
+ggplot(df_plot, aes(x = age_group, y = n, fill = sex)) +
+  geom_col(width = 0.9) +
+  coord_flip() +
+  facet_wrap(~ grave_type, ncol = 2) +
+  scale_y_continuous(labels = function(x) abs(x)) +
+  scale_fill_manual(values = c("Male" = "#0B5D1E", "Female" = "grey70"),
+                    breaks = c("Male", "Female")) +
+  labs(
+    x = "Age Group (years)",
+    y = "Number of Individuals",
+    fill = NULL,
+    title = "Age-Pyramid by Burial-Type"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank()
+  )
+```
+
